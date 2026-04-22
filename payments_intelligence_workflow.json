@@ -1,0 +1,512 @@
+{
+  "name": "Payments & Market Signals Intelligence — Daily 6:30AM",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "node-schedule-trigger",
+      "name": "Schedule Trigger (6:30AM Daily)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "url": "https://api.apify.com/v2/acts/apidojo~tweet-scraper/runs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "token",
+              "value": "YOUR_APIFY_API_TOKEN"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"searchTerms\": [\n    \"from:PaymentsSource\",\n    \"from:PYMNTS\",\n    \"from:VisaNews\",\n    \"from:Stripe\",\n    \"from:Mastercard\",\n    \"from:federalreserve\",\n    \"from:BIS_org\",\n    \"CBDC\",\n    \"stablecoin\",\n    \"interchange fee\",\n    \"fintech regulation\",\n    \"Federal Reserve payments\",\n    \"interest rates decision\",\n    \"crypto regulation payments\",\n    \"payment rails\",\n    \"real-time payments\",\n    \"FedNow\",\n    \"open banking\"\n  ],\n  \"maxItems\": 150,\n  \"tweetLanguage\": \"en\",\n  \"minimumRetweets\": 0,\n  \"minimumFavorites\": 0,\n  \"minimumReplies\": 0,\n  \"start\": \"{{ new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0] }}\",\n  \"end\": \"{{ new Date().toISOString().split('T')[0] }}\",\n  \"addUserInfo\": true,\n  \"scrapeType\": \"tweets\"\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "node-apify-run",
+      "name": "Apify - Start X Scraper Run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apify-header-auth",
+          "name": "Apify Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 45,
+        "unit": "seconds"
+      },
+      "id": "node-wait",
+      "name": "Wait 45s for Scraper",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [660, 300],
+      "webhookId": "wait-webhook-payments"
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "url": "=https://api.apify.com/v2/acts/apidojo~tweet-scraper/runs/{{ $node[\"Apify - Start X Scraper Run\"].json.data.id }}/dataset/items",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "token",
+              "value": "YOUR_APIFY_API_TOKEN"
+            },
+            {
+              "name": "format",
+              "value": "json"
+            },
+            {
+              "name": "limit",
+              "value": "150"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-apify-fetch",
+      "name": "Apify - Fetch Scraped Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apify-header-auth",
+          "name": "Apify Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// --- CLEAN & FILTER SCRAPED X POSTS FOR PAYMENTS / FINTECH INTELLIGENCE ---\n\nconst rawItems = $input.all();\nconst allPosts = [];\n\n// Flatten all results from the Apify dataset response\nfor (const item of rawItems) {\n  const data = item.json;\n  if (Array.isArray(data)) {\n    allPosts.push(...data);\n  } else if (data && typeof data === 'object') {\n    allPosts.push(data);\n  }\n}\n\n// ── Priority signal keywords ──────────────────────────────────────────────\nconst HIGH_PRIORITY_KEYWORDS = [\n  // Central bank / macro\n  'CBDC', 'central bank digital currency', 'FedNow', 'Federal Reserve',\n  'interest rate', 'rate hike', 'rate cut', 'basis points', 'monetary policy',\n  'BIS', 'Bank for International Settlements', 'inflation', 'fed funds',\n  // Stablecoin / crypto regulation\n  'stablecoin', 'USDC', 'USDT', 'tether', 'crypto regulation', 'SEC crypto',\n  'digital asset', 'tokenized', 'blockchain payment', 'crypto bill',\n  // Payments infrastructure\n  'interchange', 'payment rails', 'real-time payment', 'instant payment',\n  'open banking', 'API banking', 'payment network', 'card network',\n  'Durbin', 'Regulation E', 'ACH', 'wire transfer', 'SWIFT',\n  // Fintech / product moves\n  'Visa', 'Mastercard', 'Stripe', 'PayPal', 'Square', 'Block',\n  'Apple Pay', 'Google Pay', 'Klarna', 'Affirm', 'BNPL',\n  'acquires', 'acquisition', 'merger', 'partnership', 'launches', 'announces',\n  'raises', 'funding', 'Series', 'IPO', 'valuation',\n  // Regulatory / policy\n  'regulation', 'compliance', 'enforcement', 'fine', 'sanction',\n  'CFPB', 'OCC', 'FinCEN', 'AML', 'KYC'\n];\n\n// ── Trusted payments/fintech accounts ────────────────────────────────────\nconst TRUSTED_ACCOUNTS = [\n  'paymentssource', 'pymnts', 'visanews', 'stripe', 'mastercard',\n  'federalreserve', 'bis_org', 'reuters', 'bloomberg', 'ft',\n  'wsj', 'cnbc', 'fortunemagazine', 'theinformation'\n];\n\n// ── Spam / noise filters ──────────────────────────────────────────────────\nconst SPAM_PATTERNS = [\n  /follow me/i,\n  /click here/i,\n  /DM for/i,\n  /giveaway/i,\n  /airdrop/i,\n  /moon.*crypto/i,\n  /\\bRT\\b.*\\bRT\\b/i,\n  /get rich/i,\n  /100x/i\n];\n\nconst seen = new Set();\nconst cleaned = [];\n\nfor (const post of allPosts) {\n  // Normalize field names across Apify actor versions\n  const text = post.text || post.full_text || post.tweet || post.content || '';\n  const author = (\n    post.author?.userName ||\n    post.user?.screen_name ||\n    post.username ||\n    post.screenName || ''\n  ).toLowerCase();\n  const createdAt = post.createdAt || post.created_at || post.timestamp || '';\n  const likes = post.likeCount || post.favorite_count || post.likes || 0;\n  const retweets = post.retweetCount || post.retweet_count || post.retweets || 0;\n  const url = post.url || post.tweet_url || (post.id ? `https://x.com/i/web/status/${post.id}` : '');\n  const tweetId = post.id || post.tweet_id || url;\n\n  // Skip empty or duplicate posts\n  if (!text || !text.trim()) continue;\n  if (seen.has(tweetId)) continue;\n  seen.add(tweetId);\n\n  // Skip spam\n  const isSpam = SPAM_PATTERNS.some(p => p.test(text));\n  if (isSpam) continue;\n\n  // Skip very short posts with no substance (after stripping URLs)\n  const strippedText = text.replace(/https?:\\/\\/\\S+/g, '').trim();\n  if (strippedText.length < 30) continue;\n\n  // Score relevance\n  const textLower = text.toLowerCase();\n  const matchedKeywords = HIGH_PRIORITY_KEYWORDS.filter(kw =>\n    textLower.includes(kw.toLowerCase())\n  );\n  const isTrustedAccount = TRUSTED_ACCOUNTS.some(acc => author.includes(acc));\n\n  const relevanceScore =\n    matchedKeywords.length +\n    (isTrustedAccount ? 3 : 0) +\n    (likes > 200 ? 2 : likes > 50 ? 1 : 0) +\n    (retweets > 100 ? 2 : retweets > 25 ? 1 : 0);\n\n  // Must have at least one keyword match or be from a trusted account\n  if (relevanceScore === 0) continue;\n\n  // Clean text\n  const cleanText = text\n    .replace(/\\n{3,}/g, '\\n\\n')\n    .replace(/[ \\t]{2,}/g, ' ')\n    .trim();\n\n  // Tag signal category for Claude context\n  const signalCategory = (() => {\n    const tl = textLower;\n    if (/cbdc|fednow|federal reserve|bis|interest rate|monetary|rate hike|rate cut/.test(tl)) return 'CENTRAL_BANK';\n    if (/stablecoin|usdc|usdt|tether|crypto regulation|digital asset|tokenized|blockchain payment/.test(tl)) return 'CRYPTO_REGULATORY';\n    if (/interchange|payment rail|real.time payment|open banking|ach|swift|durbin/.test(tl)) return 'PAYMENT_INFRASTRUCTURE';\n    if (/visa|mastercard|stripe|paypal|square|apple pay|google pay|klarna|affirm|bnpl/.test(tl)) return 'FINTECH_PRODUCT';\n    if (/regulation|cfpb|occ|fincen|aml|kyc|compliance|fine|sanction/.test(tl)) return 'REGULATORY';\n    return 'GENERAL_FINTECH';\n  })();\n\n  cleaned.push({\n    json: {\n      text: cleanText,\n      author: author || 'unknown',\n      createdAt,\n      likes,\n      retweets,\n      url,\n      matchedKeywords,\n      relevanceScore,\n      isTrustedAccount,\n      signalCategory\n    }\n  });\n}\n\n// Sort by relevance score descending, cap at 60 posts for Claude\ncleaned.sort((a, b) => b.json.relevanceScore - a.json.relevanceScore);\nconst top = cleaned.slice(0, 60);\n\n// If no posts passed filtering, signal downstream\nif (top.length === 0) {\n  return [{\n    json: {\n      noPosts: true,\n      message: 'No relevant payments/fintech posts found in the last 24 hours.',\n      posts: []\n    }\n  }];\n}\n\n// Format posts into a readable block for Claude\nconst formattedPosts = top.map((item, i) => {\n  const p = item.json;\n  const dateStr = p.createdAt ? new Date(p.createdAt).toUTCString() : 'N/A';\n  return [\n    `[${i + 1}] @${p.author} | ${dateStr} | Likes: ${p.likes} | RTs: ${p.retweets} | Category: ${p.signalCategory}`,\n    p.text,\n    `URL: ${p.url}`,\n    `Matched: ${p.matchedKeywords.slice(0, 5).join(', ')}`\n  ].join('\\n');\n}).join('\\n\\n---\\n\\n');\n\nreturn [{\n  json: {\n    noPosts: false,\n    postCount: top.length,\n    formattedPosts,\n    posts: top.map(i => i.json)\n  }\n}];\n"
+      },
+      "id": "node-clean-filter",
+      "name": "Clean & Filter Posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-no-posts",
+              "leftValue": "={{ $json.noPosts }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-no-posts",
+      "name": "If No Posts Found",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1320, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "YOUR_ANTHROPIC_API_KEY"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 4096,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"You are a payments and financial markets analyst. From the following X posts:\\n1. Flag any central bank or Fed signals\\n2. Identify fintech/payments product moves (Visa, Mastercard, Stripe, etc.)\\n3. Highlight stablecoin or crypto regulatory news\\n4. Note any market-moving macro signals\\nRate each signal: Buy signal / Watch / Noise.\\n\\nToday's date: {{ new Date().toUTCString() }}\\nTotal posts analyzed: {{ $json.postCount }}\\n\\nPosts:\\n{{ $json.formattedPosts }}\"\n    }\n  ]\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false
+            }
+          }
+        }
+      },
+      "id": "node-claude-api",
+      "name": "Claude API - Analyze Posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "claude-header-auth",
+          "name": "Claude API Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Extract Claude's text response from the Messages API response\nconst item = $input.first();\nconst response = item.json;\n\nlet analysisText = '';\n\nif (response && response.content && Array.isArray(response.content)) {\n  const textBlock = response.content.find(b => b.type === 'text');\n  analysisText = textBlock ? textBlock.text : JSON.stringify(response.content);\n} else if (response && response.completion) {\n  analysisText = response.completion;\n} else {\n  analysisText = JSON.stringify(response);\n}\n\n// Detect urgency signals\nconst hasBuySignal = /buy signal/i.test(analysisText);\nconst hasUrgent = /\\[URGENT\\]|urgent/i.test(analysisText);\nconst isMajorSignal = hasBuySignal || hasUrgent;\n\n// Build a clean date string\nconst today = new Date();\nconst dateStr = today.toLocaleDateString('en-US', {\n  weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'\n});\n\n// Truncate for Slack (Slack blocks have a 3000 char limit per section)\nconst SLACK_MAX = 2900;\nconst slackBody = analysisText.length > SLACK_MAX\n  ? analysisText.slice(0, SLACK_MAX) + '...\\n\\n_(truncated — see Notion for full report)_'\n  : analysisText;\n\n// Determine signal emoji for Slack header\nconst signalEmoji = hasBuySignal ? ':green_circle:' : hasUrgent ? ':red_circle:' : ':large_yellow_circle:';\n\nreturn [{\n  json: {\n    analysisText,\n    slackBody,\n    hasBuySignal,\n    hasUrgent,\n    isMajorSignal,\n    signalEmoji,\n    dateStr,\n    model: response.model || 'claude-sonnet-4-6',\n    inputTokens: response.usage?.input_tokens || 0,\n    outputTokens: response.usage?.output_tokens || 0\n  }\n}];\n"
+      },
+      "id": "node-extract-claude",
+      "name": "Extract Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 200]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#payments-signals",
+          "mode": "name"
+        },
+        "messageType": "block",
+        "blocksUi": {
+          "blocksValues": [
+            {
+              "type": "header",
+              "text": {
+                "type": "plain_text",
+                "text": "={{ $json.signalEmoji }} Payments & Market Signals — {{ $json.dateStr }}"
+              }
+            },
+            {
+              "type": "section",
+              "text": {
+                "type": "mrkdwn",
+                "text": "={{ $json.slackBody }}"
+              }
+            },
+            {
+              "type": "divider"
+            },
+            {
+              "type": "context",
+              "elements": [
+                {
+                  "type": "mrkdwn",
+                  "text": "Powered by claude-sonnet-4-6 | {{ $json.inputTokens }} in / {{ $json.outputTokens }} out tokens | Sources: @PaymentsSource @PYMNTS @VisaNews @Stripe @Mastercard @federalreserve @BIS_org + payments keywords"
+                }
+              ]
+            }
+          ]
+        },
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "node-slack",
+      "name": "Slack - Post to #payments-signals",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [2000, 100],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-api-creds",
+          "name": "Slack API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "create",
+        "databaseId": {
+          "__rl": true,
+          "value": "YOUR_NOTION_DATABASE_ID",
+          "mode": "id"
+        },
+        "title": "=Payments & Market Signals — {{ $json.dateStr }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Name",
+              "type": "title",
+              "titleValue": "=Payments & Market Signals — {{ $json.dateStr }}"
+            },
+            {
+              "key": "Date",
+              "type": "date",
+              "dateValue": "={{ new Date().toISOString() }}"
+            },
+            {
+              "key": "Buy Signal",
+              "type": "checkbox",
+              "checkboxValue": "={{ $json.hasBuySignal }}"
+            },
+            {
+              "key": "Urgent",
+              "type": "checkbox",
+              "checkboxValue": "={{ $json.hasUrgent }}"
+            },
+            {
+              "key": "Model",
+              "type": "richText",
+              "textContent": "=claude-sonnet-4-6"
+            },
+            {
+              "key": "Tags",
+              "type": "multiSelect",
+              "multiSelectValue": "Payments Intelligence"
+            }
+          ]
+        },
+        "blockUi": {
+          "blockValues": [
+            {
+              "type": "heading_1",
+              "textContent": "=Payments & Market Signals — {{ $json.dateStr }}"
+            },
+            {
+              "type": "paragraph",
+              "textContent": "=Sources: @PaymentsSource, @PYMNTS, @VisaNews, @Stripe, @Mastercard, @federalreserve, @BIS_org + keywords: CBDC, stablecoin, interchange, FedNow, open banking, crypto regulation, payment rails"
+            },
+            {
+              "type": "divider"
+            },
+            {
+              "type": "heading_2",
+              "textContent": "Signal Analysis"
+            },
+            {
+              "type": "paragraph",
+              "textContent": "={{ $json.analysisText }}"
+            },
+            {
+              "type": "divider"
+            },
+            {
+              "type": "heading_2",
+              "textContent": "Run Metadata"
+            },
+            {
+              "type": "paragraph",
+              "textContent": "=Model: claude-sonnet-4-6 | Input tokens: {{ $json.inputTokens }} | Output tokens: {{ $json.outputTokens }} | Buy signal: {{ $json.hasBuySignal }} | Run date: {{ $json.dateStr }}"
+            }
+          ]
+        }
+      },
+      "id": "node-notion",
+      "name": "Notion - Create Signal Page",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [2000, 340],
+      "credentials": {
+        "notionApi": {
+          "id": "notion-api-creds",
+          "name": "Notion API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#payments-signals",
+          "mode": "name"
+        },
+        "messageType": "block",
+        "blocksUi": {
+          "blocksValues": [
+            {
+              "type": "section",
+              "text": {
+                "type": "mrkdwn",
+                "text": ":information_source: *Payments & Market Signals — {{ new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) }}*\n\nNo relevant payments/fintech posts were found in the last 24 hours. The scraper ran successfully but returned no qualifying content. This may indicate X API restrictions or a quiet news day."
+              }
+            }
+          ]
+        },
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "node-slack-no-posts",
+      "name": "Slack - No Posts Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [1560, 440],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-api-creds",
+          "name": "Slack API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (6:30AM Daily)": {
+      "main": [
+        [
+          {
+            "node": "Apify - Start X Scraper Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apify - Start X Scraper Run": {
+      "main": [
+        [
+          {
+            "node": "Wait 45s for Scraper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 45s for Scraper": {
+      "main": [
+        [
+          {
+            "node": "Apify - Fetch Scraped Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apify - Fetch Scraped Results": {
+      "main": [
+        [
+          {
+            "node": "Clean & Filter Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean & Filter Posts": {
+      "main": [
+        [
+          {
+            "node": "If No Posts Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If No Posts Found": {
+      "main": [
+        [
+          {
+            "node": "Slack - No Posts Notification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Claude API - Analyze Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude API - Analyze Posts": {
+      "main": [
+        [
+          {
+            "node": "Extract Claude Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Claude Response": {
+      "main": [
+        [
+          {
+            "node": "Slack - Post to #payments-signals",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notion - Create Signal Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "createdAt": "2026-03-24T00:00:00.000Z",
+      "updatedAt": "2026-03-24T00:00:00.000Z",
+      "id": "tag-payments-workflow",
+      "name": "Payments Intelligence"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-24T00:00:00.000Z",
+  "versionId": "1"
+}
